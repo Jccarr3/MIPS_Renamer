@@ -76,17 +76,17 @@ bool renamer::stall_branch(uint64_t bundle_branch){
     uint32_t count = 0;
 
     //the following for loop checks the first bit in tmp_gbm then shift it right by 1
-    for(uint32_t i = 0; i < 64; i++){   
-        if(tmp_gbm % 2 == 0){       //if the first bit is 0, then increase the count of free branch checkpoints
+    for(uint32_t i = 0; i < Branch_Checkpoints.size(); i++){   
+        if((tmp_gbm & 1) == 0){       //if the first bit is 0, then increase the count of free branch checkpoints
             count++;
         }
 
-        if(count > bundle_branch)   return false;       //if number of free spots is greater than branches coming in then return false
+        if(count >= bundle_branch)   return false;       //if number of free spots is greater than branches coming in then return false
 
         tmp_gbm = tmp_gbm >> 1;
     }
 
-    cerr << "branch stall" << endl;
+    //cerr << "branch stall" << endl;
     return true;
 }
 
@@ -108,13 +108,13 @@ uint64_t renamer::rename_rdst(uint64_t log_reg){
 
 
     //set PRF_ready to false for the register being taken out of free list
-    //PRF_ready[Free_List.free_regs[Free_List.head]] = false;
+    PRF_ready[Free_List.free_regs[Free_List.head]] = false;
 
     //get register name from Free List and set in RMT
-    RMT[log_reg] = Free_List.free_regs[Free_List.head++];
+    RMT[log_reg] = Free_List.free_regs[Free_List.head];
     
     //ensure wraparound is covered
-    Free_List.head = Free_List.head % Free_List.free_regs.size();
+    Free_List.head = (Free_List.head + 1) % Free_List.free_regs.size();
 
     //adjust free list head phase
     if(Free_List.head == 0){
@@ -124,35 +124,42 @@ uint64_t renamer::rename_rdst(uint64_t log_reg){
     //return new physical register assignment from RMT
     //cerr << "successful rename: " << "reg: " << log_reg << " " << RMT[log_reg] << endl;//////////////////////////////////////////////////
     return RMT[log_reg];
+
+    //cerr << "RN dest | ";
+
 }
 
 
 //Function to create new branch checkpoint
 uint64_t renamer::checkpoint(){
-    // uint64_t tmp_gbm = GBM;
-    // uint64_t new_bit = 1;       //this will be used to modify GBM
-    // uint32_t position = 0;
+    uint64_t tmp_gbm = GBM;
+    uint64_t new_bit = 1;       //this will be used to modify GBM
+    uint32_t position = 0;
 
-    // assert(!stall_branch(1));
+    assert(!stall_branch(1));
 
-    // //scan through GBM checking for 0 bit
-    // for(uint32_t i = 0; i < 64; i++){
-    //     if(tmp_gbm % 2 == 0)    break;
-    //     tmp_gbm = tmp_gbm >> 1;
-    //     new_bit = new_bit << 1;
-    //     position++;
-    // }
+    //scan through GBM checking for 0 bit
+    for(uint32_t i = 0; i < Branch_Checkpoints.size(); i++){
+        if((tmp_gbm & 1) == 0)    break;
+        tmp_gbm = tmp_gbm >> 1;
+        new_bit = new_bit << 1;
+        position++;
+    }
+    assert(position < Branch_Checkpoints.size());
 
-    // GBM += new_bit;         //adds 1 in correct in necessary bit position
+    GBM |= new_bit;         //adds 1 in correct in necessary bit position
 
-    // //add checkpoint information
-    // Branch_Checkpoints[position].RMT_shadow = RMT;
-    // Branch_Checkpoints[position].FL_head = Free_List.head;
-    // Branch_Checkpoints[position].FL_h_phase = Free_List.h_phase;
-    // Branch_Checkpoints[position].gbm_check = GBM;
+    //add checkpoint information
+    Branch_Checkpoints[position].RMT_shadow = RMT;
+    //cerr << "Checkpoint success\n";
+    Branch_Checkpoints[position].FL_head = Free_List.head;
+    Branch_Checkpoints[position].FL_h_phase = Free_List.h_phase;
+    Branch_Checkpoints[position].gbm_check = GBM;
 
-    // return position;
-    return 0;
+    //cerr << "checkpoint | ";
+
+
+    return position;
 }
 
 //Function to stall the dispatch stage
@@ -212,6 +219,7 @@ uint64_t renamer::dispatch_inst(bool dest_valid, uint64_t log_reg, uint64_t phys
     if(Active_List.tail == 0)   Active_List.t_phase = !Active_List.t_phase;
 
     return tmp_tail;
+
 }
 
 //Function to indicate if physical register is ready
@@ -247,44 +255,53 @@ void renamer::set_complete(uint64_t AL_index){
 
 //Function to handle branch resolution
 void renamer::resolve(uint64_t AL_index, uint64_t branch_ID, bool correct){
-    // //safter checks
-    // assert(branch_ID < Branch_Checkpoints.size());
+    //safety checks
+    assert(branch_ID < Branch_Checkpoints.size());
+    assert(Branch_Checkpoints[branch_ID].RMT_shadow.size() > 0);
 
-    // uint64_t gbm_bit = 1ULL << branch_ID;
-    // //Branch Prediction Correct
-    // if(correct){
-    //     //when checking if a branch relies on that branch ID, bitwise AND the GBM with gbm_bit, if result is gbm bit then that bit is set in the checkpoint
-    //         //clear branch's bit in GBM
-    //     GBM -= gbm_bit;
-    //         //clear bit in checkpointed GBMs
-    //     for(uint32_t i = 0; i < Branch_Checkpoints.size(); i++){
-    //         //check if bit is set in that checkpoint
-    //         if((Branch_Checkpoints[i].gbm_check & gbm_bit) == gbm_bit){
-    //             Branch_Checkpoints[i].gbm_check -= gbm_bit;
-    //         }
-    //     }
-    // }
-    // else{
-    //     //Branch Prediction False
-    //         //restore GBM from checkpoint(ensure that this branch's bit is set to 0)
-    //         GBM = Branch_Checkpoints[branch_ID].gbm_check;
-    //         if((Branch_Checkpoints[branch_ID].gbm_check & gbm_bit) == gbm_bit){
-    //             Branch_Checkpoints[branch_ID].gbm_check -= gbm_bit;
-    //         }
-    //         //restore the RMT
-    //         for(uint32_t i = 0; i < RMT.size(); i++){
-    //             RMT[i] = Branch_Checkpoints[branch_ID].RMT_shadow[i];
-    //         }
-    //         //restore the free list head and head phase
-    //         Free_List.head = Branch_Checkpoints[branch_ID].FL_head;
-    //         Free_List.h_phase = Branch_Checkpoints[branch_ID].FL_h_phase;
-    //         //restore active list tail and tail phase(index after mispredicted branch)
-    //         Active_List.tail = (AL_index +1) % Active_List.active_regs.size();
-    //         if(Active_List.tail >= Active_List.head){
-    //             Active_List.t_phase = Active_List.h_phase;
-    //         }
-    //         else    Active_List.t_phase = !Active_List.h_phase;
-    // }
+    uint64_t start = 1;
+    uint64_t gbm_bit = start << branch_ID;
+    //Branch Prediction Correct
+    if(correct){
+        //when checking if a branch relies on that branch ID, bitwise AND the GBM with gbm_bit, if result is gbm bit then that bit is set in the checkpoint
+            //clear branch's bit in GBM
+        GBM &= ~gbm_bit;
+            //clear bit in checkpointed GBMs
+        for(uint32_t i = 0; i < Branch_Checkpoints.size(); i++){
+            //check if bit is set in that checkpoint
+            if((Branch_Checkpoints[i].gbm_check & gbm_bit) == gbm_bit){
+                Branch_Checkpoints[i].gbm_check &= ~gbm_bit;
+            }
+        }
+        //cerr << "checkpoint removed(predicted)\n";
+    }
+    else{
+        //Branch Prediction False
+            //restore GBM from checkpoint(ensure that this branch's bit is set to 0)
+            GBM = Branch_Checkpoints[branch_ID].gbm_check;
+            GBM &= ~gbm_bit;
+            //restore the RMT
+            // for(uint32_t i = 0; i < RMT.size(); i++){
+            //     RMT[i] = Branch_Checkpoints[branch_ID].RMT_shadow[i];
+            // }
+            RMT = Branch_Checkpoints[branch_ID].RMT_shadow;
+
+            //restore the free list head and head phase
+            Free_List.head = Branch_Checkpoints[branch_ID].FL_head;
+            Free_List.h_phase = Branch_Checkpoints[branch_ID].FL_h_phase;
+            
+            //restore active list tail and tail phase(index after mispredicted branch)
+            Active_List.tail = (AL_index + 1) % Active_List.active_regs.size();
+            if(Active_List.tail > Active_List.head){
+                Active_List.t_phase = Active_List.h_phase;
+            }
+            else    Active_List.t_phase = !Active_List.h_phase;
+
+            //cerr << "Checkpoint removed(mispredicted)\n";
+    }
+
+    //cerr << "resolve | ";
+
 }
 
 
@@ -334,6 +351,7 @@ void renamer::commit(){
 
         //move physical register from AMT to Free List
         Free_List.free_regs[(Free_List.tail)] = AMT[tmp_log_reg];
+        PRF_ready[AMT[tmp_log_reg]] = true;
 
         //increment tail and tail phase accordingly
         Free_List.tail = (Free_List.tail + 1) % Free_List.free_regs.size();
@@ -352,7 +370,7 @@ void renamer::commit(){
     if(Active_List.head == 0)       Active_List.h_phase = !Active_List.h_phase;
 
     //if(test_count > 31900  && test_count < 42000)      cerr << "Instructions retired: " << test_count;
-
+    //cerr << "commit | ";
 
 }
 
@@ -373,8 +391,9 @@ void renamer::squash(){
     Free_List.h_phase = !Free_List.t_phase;
 
     //Active List corrections(important note: does not work when doing Active_List.tail = Active_List.head)
-    Active_List.tail = 0;
-    Active_List.head = 0;
+    Active_List.tail = Active_List.head;
+    // Active_List.tail = 0;
+    // Active_List.head = 0;
     Active_List.t_phase = Active_List.h_phase;
 
 
@@ -383,6 +402,7 @@ void renamer::squash(){
     for(uint32_t i = 0; i < RMT.size();i++){
         RMT[i] = AMT[i];
     }
+    //cerr << "squash | ";
 }
 
 //Function to set exception bit
@@ -417,5 +437,6 @@ void renamer::set_value_misprediction(uint64_t AL_index){
 bool renamer::get_exception(uint64_t AL_index){
     return Active_List.active_regs[AL_index].exception;
 }
+
 
 
