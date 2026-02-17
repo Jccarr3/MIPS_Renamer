@@ -51,31 +51,29 @@ using namespace std;
 
 //Function to stall rename stage if free list is empty
 bool renamer::stall_reg(uint64_t bundle_dst){
-    uint32_t tmp_head = (Free_List.head + bundle_dst) % Free_List.free_regs.size();
-    bool tmp_h_phase;
+    uint32_t occupancy;
+    uint32_t size = Free_List.free_regs.size();
 
-    if((Free_List.head + bundle_dst) >= Free_List.free_regs.size()){
-        tmp_h_phase = !Free_List.h_phase;
+    //set occupancy
+    if(Free_List.h_phase != Free_List.t_phase){
+        occupancy = Free_List.head - Free_List.tail;
     }
-    else    tmp_h_phase = Free_List.h_phase;
+    else    occupancy = size - (Free_List.tail - Free_List.head);
 
-
-
-
-    //if the tmp_head is past the tail and the phases are the same then the free list is empty
-
-    if((tmp_head > Free_List.tail) && (tmp_h_phase == Free_List.t_phase))   {
+    //check if full after bundles are added
+    if((occupancy + bundle_dst)  > size){
         return true;
-        cerr << "rename stalled" << endl;
     }
 
     return false;
+
+    
 }
 
 //Function to stall rename if too many unresolved branches
 bool renamer::stall_branch(uint64_t bundle_branch){
     uint64_t tmp_gbm = GBM;
-    uint8_t count = 0;
+    uint32_t count = 0;
 
     //the following for loop checks the first bit in tmp_gbm then shift it right by 1
     for(uint32_t i = 0; i < 64; i++){   
@@ -85,7 +83,7 @@ bool renamer::stall_branch(uint64_t bundle_branch){
 
         if(count > bundle_branch)   return false;       //if number of free spots is greater than branches coming in then return false
 
-        tmp_gbm >> 1;
+        tmp_gbm = tmp_gbm >> 1;
     }
 
     cerr << "branch stall" << endl;
@@ -133,15 +131,15 @@ uint64_t renamer::rename_rdst(uint64_t log_reg){
 uint64_t renamer::checkpoint(){
     // uint64_t tmp_gbm = GBM;
     // uint64_t new_bit = 1;       //this will be used to modify GBM
-    // uint8_t position = 0;
+    // uint32_t position = 0;
 
     // assert(!stall_branch(1));
 
     // //scan through GBM checking for 0 bit
-    // for(uint8_t i = 0; i < 64; i++){
+    // for(uint32_t i = 0; i < 64; i++){
     //     if(tmp_gbm % 2 == 0)    break;
-    //     tmp_gbm >> 1;
-    //     new_bit << 1;
+    //     tmp_gbm = tmp_gbm >> 1;
+    //     new_bit = new_bit << 1;
     //     position++;
     // }
 
@@ -154,31 +152,23 @@ uint64_t renamer::checkpoint(){
     // Branch_Checkpoints[position].gbm_check = GBM;
 
     // return position;
-    //cerr << "checkpoint called" << endl;///////////////////////////////////////////////
     return 0;
 }
 
 //Function to stall the dispatch stage
 bool renamer::stall_dispatch(uint64_t bundle_inst){
     //temporary tail pointing to where it would be if bundle is added
-    uint32_t tmp_tail = (Active_List.tail + (bundle_inst - 1)) % Active_List.active_regs.size();      
-    bool tmp_t_phase = Active_List.t_phase;
+    uint32_t occupancy;
+    uint32_t size = Active_List.active_regs.size();
 
-    //make necessary adjustments to tail phase if wraparound occurs
-    if((Active_List.tail + (bundle_inst-1)) >= Active_List.active_regs.size()){     
-        tmp_t_phase = !Active_List.t_phase;
+    //set occupancy value
+    if(Active_List.h_phase == Active_List.t_phase){
+        occupancy = Active_List.tail-Active_List.head;
     }
+    else    occupancy = size - (Active_List.head - Active_List.tail);
 
 
-    //if the tmp tail pointer is past or at the head then there is not enough space for the bundle
-    if((tmp_tail >= Active_List.head) && (tmp_t_phase != Active_List.h_phase)){ 
-        //cerr << "dispatch stalled ";
-
-
-        return true;
-    }
-
-//test change added
+    if((occupancy + bundle_inst) > size)    return true;
 
     return false;
 }
@@ -186,6 +176,9 @@ bool renamer::stall_dispatch(uint64_t bundle_inst){
 //Function to dispatch a single instruction
 uint64_t renamer::dispatch_inst(bool dest_valid, uint64_t log_reg, uint64_t phys_reg, bool load, bool store, bool branch, bool amo, bool csr, uint64_t PC){
     //ensure active list isn't full
+    if(stall_dispatch(1)){
+        cerr << Active_List.head << " | " << Active_List.tail;
+    }
     assert(!stall_dispatch(1));
 
 
@@ -254,7 +247,44 @@ void renamer::set_complete(uint64_t AL_index){
 
 //Function to handle branch resolution
 void renamer::resolve(uint64_t AL_index, uint64_t branch_ID, bool correct){
-    uint8_t x = 3+5;
+    // //safter checks
+    // assert(branch_ID < Branch_Checkpoints.size());
+
+    // uint64_t gbm_bit = 1ULL << branch_ID;
+    // //Branch Prediction Correct
+    // if(correct){
+    //     //when checking if a branch relies on that branch ID, bitwise AND the GBM with gbm_bit, if result is gbm bit then that bit is set in the checkpoint
+    //         //clear branch's bit in GBM
+    //     GBM -= gbm_bit;
+    //         //clear bit in checkpointed GBMs
+    //     for(uint32_t i = 0; i < Branch_Checkpoints.size(); i++){
+    //         //check if bit is set in that checkpoint
+    //         if((Branch_Checkpoints[i].gbm_check & gbm_bit) == gbm_bit){
+    //             Branch_Checkpoints[i].gbm_check -= gbm_bit;
+    //         }
+    //     }
+    // }
+    // else{
+    //     //Branch Prediction False
+    //         //restore GBM from checkpoint(ensure that this branch's bit is set to 0)
+    //         GBM = Branch_Checkpoints[branch_ID].gbm_check;
+    //         if((Branch_Checkpoints[branch_ID].gbm_check & gbm_bit) == gbm_bit){
+    //             Branch_Checkpoints[branch_ID].gbm_check -= gbm_bit;
+    //         }
+    //         //restore the RMT
+    //         for(uint32_t i = 0; i < RMT.size(); i++){
+    //             RMT[i] = Branch_Checkpoints[branch_ID].RMT_shadow[i];
+    //         }
+    //         //restore the free list head and head phase
+    //         Free_List.head = Branch_Checkpoints[branch_ID].FL_head;
+    //         Free_List.h_phase = Branch_Checkpoints[branch_ID].FL_h_phase;
+    //         //restore active list tail and tail phase(index after mispredicted branch)
+    //         Active_List.tail = (AL_index +1) % Active_List.active_regs.size();
+    //         if(Active_List.tail >= Active_List.head){
+    //             Active_List.t_phase = Active_List.h_phase;
+    //         }
+    //         else    Active_List.t_phase = !Active_List.h_phase;
+    // }
 }
 
 
@@ -350,7 +380,7 @@ void renamer::squash(){
 
 
     //RMT Corrections
-    for(uint8_t i = 0; i < RMT.size();i++){
+    for(uint32_t i = 0; i < RMT.size();i++){
         RMT[i] = AMT[i];
     }
 }
@@ -387,3 +417,5 @@ void renamer::set_value_misprediction(uint64_t AL_index){
 bool renamer::get_exception(uint64_t AL_index){
     return Active_List.active_regs[AL_index].exception;
 }
+
+
